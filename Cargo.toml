@@ -1,0 +1,21 @@
+[package]
+name = "av-mp4"
+version = "0.1.0"
+authors = ["Felix Kaaman <tmtu@tmtu.ee>"]
+edition = "2018"
+
+[dependencies]
+av-data = "0.3"
+av-format = "0.3"
+
+byteorder = "*"
+bitflags = "*"
+bytemuck = "*"
+thiserror = "*"
+
+log = "*"
+pretty_env_logger = "0.4"
+
+[patch.crates-io]
+av-data = { git = "https://github.com/rust-av/rust-av" }
+av-format = { git = "https://github.com/rust-av/rust-av" }
