@@ -99,8 +99,10 @@ impl stsd::SampleEntry {
                 let width = entry.width as usize;
                 let height = entry.height as usize;
 
-                let mut parameter_sets = entry.avcc.config.sequence_parameter_sets[0].0.clone();
+                let mut parameter_sets = vec![0, 0, 1];
+                parameter_sets.extend(&entry.avcc.config.sequence_parameter_sets[0].0);
                 if let Some(pps) = entry.avcc.config.picture_parameter_sets.get(0) {
+                    parameter_sets.extend(&[0, 0, 1][..]);
                     parameter_sets.extend(&pps.0);
                 }
 
@@ -110,7 +112,7 @@ impl stsd::SampleEntry {
                         height,
                         format: None,
                     })),
-                    codec_id: Some("avc1".into()),
+                    codec_id: Some("h264".into()),
                     extradata: Some(parameter_sets),
                     bit_rate: 0,
                     convergence_window: 0,
@@ -316,7 +318,7 @@ impl Track {
     }
 
     pub fn advance_sample(&mut self) {
-        println!("current_sample={},sync_index={},sync={:?}", self.current_sample, self.current_sync_index, self.sync_samples);
+        // println!("current_sample={},sync_index={},sync={:?}", self.current_sample, self.current_sync_index, self.sync_samples);
         let chunk = &self.stsc[self.current_stsc];
         let times = &self.times[self.current_times];
 
