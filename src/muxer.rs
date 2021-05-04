@@ -39,7 +39,7 @@ pub enum Mp4MuxerError {
 }
 
 impl From<Mp4MuxerError> for AvError {
-    fn from(e: Mp4MuxerError) -> AvError {
+    fn from(_e: Mp4MuxerError) -> AvError {
         AvError::InvalidData
     }
 }
@@ -299,7 +299,7 @@ impl TrackChunkBuilder {
             self.chunk_index += 1;
 
             self.offsets.push(offset);
-            self.chunks.push(current_chunk.clone());
+            self.chunks.push(*current_chunk);
 
             *current_chunk = stsc::SampleToChunkEntry {
                 first_chunk: self.chunk_index,
@@ -316,7 +316,7 @@ impl TrackChunkBuilder {
         } else if delta == current_time.delta {
             current_time.count += 1;
         } else {
-            self.times.push(current_time.clone());
+            self.times.push(*current_time);
 
             *current_time = stts::TimeToSampleEntry { count: 1, delta };
         }
@@ -338,6 +338,12 @@ pub struct Mp4Muxer {
     mdat_offset: u64,
     tracks: Vec<TrackChunkBuilder>,
     prev_index: isize,
+}
+
+impl Default for Mp4Muxer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Mp4Muxer {

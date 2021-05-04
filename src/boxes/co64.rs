@@ -6,12 +6,6 @@ use crate::{BoxClass, BoxName, Mp4Box};
 use std::io::Write;
 use std::mem::size_of;
 
-pub struct SampleToChunkEntry {
-    first_chunk: u32,
-    samples_per_chunk: u32,
-    sample_description_index: u32,
-}
-
 pub struct ChunkLargeOffsetBox {
     pub chunk_offsets: Vec<u64>,
 }

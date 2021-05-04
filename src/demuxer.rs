@@ -48,14 +48,14 @@ fn get_vpx_codec_data(vpcc: &vpcc::VpCodecConfigurationBox) -> VpxCodecData {
 
     // TODO: missing 12 bit formats
     let mut base = match (profile, bit_depth, chroma_subsampling) {
-        (0, 8, 0) => formats::YUV420.clone(),
-        (2, 10, 0) => formats::YUV420_10.clone(),
+        (0, 8, 0) => *formats::YUV420,
+        (2, 10, 0) => *formats::YUV420_10,
 
-        (1, 8, 0) => formats::YUV422.clone(),
-        (3, 10, 0) => formats::YUV422_10.clone(),
+        (1, 8, 0) => *formats::YUV422,
+        (3, 10, 0) => *formats::YUV422_10,
 
-        (1, 8, 2) => formats::YUV444.clone(),
-        (3, 10, 2) => formats::YUV444_10.clone(),
+        (1, 8, 2) => *formats::YUV444,
+        (3, 10, 2) => *formats::YUV444_10,
 
         _ => panic!(
             "unknown chroma subsampling: {} {} {}",
@@ -120,42 +120,6 @@ impl stsd::SampleEntry {
                     delay: 0,
                 }
             }
-        }
-    }
-}
-
-fn parse_stco(buf: &mut dyn Buffered) -> AvResult<u32> {
-    Ok(buf.read_u32::<BigEndian>()?)
-}
-
-struct ChunkOffsetIterator<'a> {
-    buf: &'a mut dyn Buffered,
-    len: u32,
-    idx: u32,
-}
-
-impl<'a> ChunkOffsetIterator<'a> {
-    pub fn new(buf: &'a mut dyn Buffered, len: u32) -> Self {
-        Self { buf, len, idx: 0 }
-    }
-
-    pub fn len(&self) -> u32 {
-        self.len
-    }
-}
-
-impl<'a> Iterator for ChunkOffsetIterator<'a> {
-    type Item = AvResult<u32>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.idx >= self.len {
-            None
-        } else {
-            self.idx += 1;
-
-            let result = parse_stco(self.buf);
-
-            Some(result)
         }
     }
 }
@@ -241,7 +205,7 @@ struct SampleTimes {
 struct Chunk {
     sample_count: u32,
     chunk_count: Option<u32>,
-    sample_description_index: u32,
+    _sample_description_index: u32,
 }
 
 enum SampleSize {
@@ -264,7 +228,6 @@ struct Track {
 
     // TODO: put all "current" state into own struct?
     current_sync_index: usize,
-    current_chunk: usize,
     current_stsc: usize,
     current_chunk_sample_offset: u64,
     stsc_chunk_index: usize,
@@ -298,8 +261,8 @@ impl Track {
         let duration = times.delta;
 
         let data_length = match &self.sizes {
-            &SampleSize::Constant(size) => size,
-            &SampleSize::Variable(ref sizes) => *sizes.get(self.current_sample as usize)?,
+            SampleSize::Constant(size) => *size,
+            SampleSize::Variable(ref sizes) => *sizes.get(self.current_sample as usize)?,
         };
 
         Some(SampleRef {
@@ -311,17 +274,13 @@ impl Track {
         })
     }
 
-    pub fn seek_to_time(&mut self, _time: u64) {
-        todo!()
-    }
-
     pub fn advance_sample(&mut self) {
         let chunk = &self.stsc[self.current_stsc];
         let times = &self.times[self.current_times];
 
         self.current_chunk_sample_offset += match &self.sizes {
-            &SampleSize::Constant(size) => size,
-            &SampleSize::Variable(ref sizes) => sizes[self.current_sample as usize],
+            SampleSize::Constant(size) => *size,
+            SampleSize::Variable(ref sizes) => sizes[self.current_sample as usize],
         } as u64;
 
         self.time_index += 1;
@@ -367,7 +326,7 @@ impl ChunkOffsets {
     fn get(&self, index: usize) -> Option<u64> {
         match self {
             ChunkOffsets::Stco(offsets) => offsets.get(index).map(|o| *o as u64),
-            ChunkOffsets::Co64(offsets) => offsets.get(index).map(|o| *o),
+            ChunkOffsets::Co64(offsets) => offsets.get(index).copied(),
         }
     }
 }
@@ -423,7 +382,6 @@ impl TrackDemuxer {
             timebase: Rational64::new(1, mdhd.timescale as i64),
             duration: tkhd.duration,
 
-            current_chunk: 0,
             current_chunk_sample_offset: 0,
             current_stsc: 0,
             stsc_chunk_index: 0,
@@ -460,7 +418,7 @@ impl TrackDemuxer {
             chunks.push(Chunk {
                 sample_count: entry.samples_per_chunk,
                 chunk_count: None,
-                sample_description_index: entry.sample_description_index,
+                _sample_description_index: entry.sample_description_index,
             });
         }
 
@@ -497,6 +455,12 @@ impl TrackDemuxer {
 
 pub struct Mp4Demuxer {
     tracks: Vec<Track>,
+}
+
+impl Default for Mp4Demuxer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Mp4Demuxer {
@@ -683,10 +647,10 @@ impl Mp4Demuxer {
         for _i in 0..entry_count {
             let chunk_offset = buf.read_u32::<BigEndian>()?;
 
-            offsets.push(chunk_offset as u64);
+            offsets.push(chunk_offset);
         }
 
-        track_demuxer.on_chunk_offsets(ChunkOffsets::Co64(offsets))?;
+        track_demuxer.on_chunk_offsets(ChunkOffsets::Stco(offsets))?;
 
         Ok(())
     }
@@ -694,7 +658,7 @@ impl Mp4Demuxer {
     fn parse_stsd(
         &mut self,
         buf: &mut dyn Buffered,
-        size: u64,
+        _size: u64,
         track_demuxer: &mut TrackDemuxer,
     ) -> AvResult<()> {
         let (_version, _flags) = read_box_flags(buf)?;

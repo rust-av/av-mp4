@@ -60,7 +60,7 @@ impl VpCodecConfigurationRecord {
         let level = header[1];
         let bit_depth = (header[2] & 0b1111_0000) >> 4;
         let chroma_subsampling = (header[2] & 0b0000_1110) >> 1;
-        let video_full_range_flags = (header[2] & 0b0000_0001);
+        let video_full_range_flags = header[2] & 0b0000_0001;
         let colour_primaries = header[3];
         let transfer_characteristics = header[4];
         let matrix_coefficients = header[5];

@@ -92,13 +92,13 @@ fn get_total_box_size<B: Mp4Box + ?Sized>(boks: &B) -> u64 {
 
 fn write_box_header<B: Mp4Box + ?Sized>(header: &mut [u8], size: u64) -> usize {
     if size > u32::MAX as _ {
-        BigEndian::write_u32(&mut header[..], 1);
+        BigEndian::write_u32(&mut *header, 1);
         header[4..8].copy_from_slice(&B::NAME);
         BigEndian::write_u64(&mut header[8..], size);
 
         16
     } else {
-        BigEndian::write_u32(&mut header[..], size as u32);
+        BigEndian::write_u32(&mut *header, size as u32);
         header[4..8].copy_from_slice(&B::NAME);
 
         8
