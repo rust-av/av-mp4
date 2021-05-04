@@ -38,6 +38,7 @@ fn get_vpx_codec_data(vpcc: &vpcc::VpCodecConfigurationBox) -> VpxCodecData {
     let bit_depth = vpcc.config.bit_depth;
     let chroma_subsampling = vpcc.config.chroma_subsampling;
 
+    #[rustfmt::skip]
     let data = [
         1, 1, profile,
         2, 1, vpcc.config.level,
@@ -214,9 +215,6 @@ pub struct SampleToChunkEntry {
     sample_description_index: u32,
 }
 
-// "get all samples in next chunk"
-// "get chunk at time T"
-
 struct SampleRef {
     time: u64,
     duration: u32,
@@ -318,7 +316,6 @@ impl Track {
     }
 
     pub fn advance_sample(&mut self) {
-        // println!("current_sample={},sync_index={},sync={:?}", self.current_sample, self.current_sync_index, self.sync_samples);
         let chunk = &self.stsc[self.current_stsc];
         let times = &self.times[self.current_times];
 
@@ -353,7 +350,9 @@ impl Track {
         // always advance one sample
         self.current_sample += 1;
 
-        if self.current_sample > self.sync_samples[self.current_sync_index] as u64 && self.current_sync_index < self.sync_samples.len() - 1 {
+        if self.current_sample > self.sync_samples[self.current_sync_index] as u64
+            && self.current_sync_index < self.sync_samples.len() - 1
+        {
             self.current_sync_index += 1;
         }
     }
@@ -841,12 +840,7 @@ impl Mp4Demuxer {
         Ok(())
     }
 
-    fn parse_trak(
-        &mut self,
-        buf: &mut dyn Buffered,
-        size: u64,
-        index: usize,
-    ) -> AvResult<Track> {
+    fn parse_trak(&mut self, buf: &mut dyn Buffered, size: u64, index: usize) -> AvResult<Track> {
         let mut track_demuxer = TrackDemuxer::new();
 
         let end = self.pos(buf)? + size;
