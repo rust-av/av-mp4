@@ -1,7 +1,6 @@
 use byteorder::{BigEndian, WriteBytesExt};
 
-use crate::Mp4BoxError;
-use crate::{BoxClass, BoxName, Mp4Box};
+use crate::*;
 
 use std::io::Write;
 use std::mem::size_of;
@@ -9,30 +8,21 @@ use std::mem::size_of;
 use super::url::DataEntryUrlBox;
 
 pub struct DataReferenceBox {
+    full_box: FullBox,
     pub entries: Vec<DataEntryUrlBox>,
 }
 
-impl Mp4Box for DataReferenceBox {
-    const NAME: BoxName = *b"dref";
-
-    fn class(&self) -> BoxClass {
-        BoxClass::FullBox {
-            version: 0,
-            flags: 0,
+impl DataReferenceBox {
+    pub fn new(entries: Vec<DataEntryUrlBox>) -> Self {
+        DataReferenceBox {
+            full_box: FullBox::new(*b"dref", 0, 0),
+            entries,
         }
     }
 
-    fn content_size(&self) -> u64 {
-        let mut size = size_of::<u32>() as u64; // entry_count
+    pub fn write(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
+        self.full_box.write(writer, self.total_size())?;
 
-        for entry in &self.entries {
-            size += entry.size();
-        }
-
-        size
-    }
-
-    fn write_contents(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
         writer.write_u32::<BigEndian>(self.entries.len() as _)?;
 
         for entry in self.entries {
@@ -40,5 +30,19 @@ impl Mp4Box for DataReferenceBox {
         }
 
         Ok(())
+    }
+
+    pub fn total_size(&self) -> u64 {
+        self.full_box.size(self.size())
+    }
+
+    fn size(&self) -> u64 {
+        let mut size = size_of::<u32>() as u64; // entry_count
+
+        for entry in &self.entries {
+            size += entry.total_size();
+        }
+
+        size
     }
 }

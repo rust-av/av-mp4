@@ -1,42 +1,46 @@
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::{BoxClass, BoxName, Buffered, Mp4Box, Mp4BoxError};
+use crate::*;
 
 use std::io::Write;
 use std::mem::size_of;
 
 pub struct VpCodecConfigurationBox {
+    full_box: FullBox,
     pub config: VpCodecConfigurationRecord,
 }
 
 impl VpCodecConfigurationBox {
-    pub fn read(buf: &mut dyn Buffered) -> Result<Self, crate::AvError> {
-        let (_version, _flags) = crate::read_box_flags(buf).unwrap();
-
-        Ok(VpCodecConfigurationBox {
-            config: VpCodecConfigurationRecord::read(buf)?,
-        })
-    }
-}
-
-impl Mp4Box for VpCodecConfigurationBox {
-    const NAME: BoxName = *b"vpcC";
-
-    fn class(&self) -> BoxClass {
-        BoxClass::FullBox {
-            version: 1,
-            flags: 0,
+    pub fn new(config: VpCodecConfigurationRecord) -> Self {
+        VpCodecConfigurationBox {
+            full_box: FullBox::new(*b"vpcC", 1, 0),
+            config,
         }
     }
 
-    fn content_size(&self) -> u64 {
-        self.config.size()
-    }
+    pub fn write(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
+        self.full_box.write(writer, self.total_size())?;
 
-    fn write_contents(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
         self.config.write(writer)?;
 
         Ok(())
+    }
+
+    pub fn read(buf: &mut dyn Buffered) -> Result<Self, Mp4BoxError> {
+        let full_box = FullBox::read(buf)?;
+
+        Ok(VpCodecConfigurationBox {
+            full_box,
+            config: VpCodecConfigurationRecord::read(buf)?,
+        })
+    }
+
+    pub fn total_size(&self) -> u64 {
+        self.full_box.size(self.size())
+    }
+
+    fn size(&self) -> u64 {
+        self.config.size()
     }
 }
 
@@ -52,7 +56,7 @@ pub struct VpCodecConfigurationRecord {
 }
 
 impl VpCodecConfigurationRecord {
-    pub fn read(buf: &mut dyn Buffered) -> Result<Self, crate::AvError> {
+    pub fn read(buf: &mut dyn Buffered) -> Result<Self, Mp4BoxError> {
         let mut header = [0u8; 6];
         buf.read_exact(&mut header)?;
 

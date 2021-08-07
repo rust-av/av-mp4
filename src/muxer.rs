@@ -14,8 +14,7 @@ use av_format::{
 use byteorder::{BigEndian, WriteBytesExt};
 
 use crate::boxes::*;
-use crate::AvError;
-use crate::Mp4Box;
+use crate::{AvError, Boks};
 
 use log::*;
 
@@ -119,22 +118,20 @@ fn get_sample_entry_for_codec(params: &CodecParams) -> Result<stsd::SampleEntry,
 
             let data = parse_vpx_codec_data(&format, &extra)?;
 
-            let entry = vpxx::Vp9SampleEntryBox {
-                width: width as u16,
-                height: height as u16,
-                vpcc: vpcc::VpCodecConfigurationBox {
-                    config: vpcc::VpCodecConfigurationRecord {
-                        profile: data.profile,
-                        level: data.level,
-                        bit_depth: data.bit_depth,
-                        chroma_subsampling: data.chroma_subsampling,
-                        video_full_range_flags: 0, // TODO
-                        colour_primaries: data.colour_primaries,
-                        transfer_characteristics: data.transfer_characteristics,
-                        matrix_coefficients: data.matrix_coefficients,
-                    },
-                },
-            };
+            let entry = vpxx::Vp9SampleEntryBox::new(
+                width as u16,
+                height as u16,
+                vpcc::VpCodecConfigurationBox::new(vpcc::VpCodecConfigurationRecord {
+                    profile: data.profile,
+                    level: data.level,
+                    bit_depth: data.bit_depth,
+                    chroma_subsampling: data.chroma_subsampling,
+                    video_full_range_flags: 0, // TODO
+                    colour_primaries: data.colour_primaries,
+                    transfer_characteristics: data.transfer_characteristics,
+                    matrix_coefficients: data.matrix_coefficients,
+                }),
+            );
 
             Ok(stsd::SampleEntry::Vp9(entry))
         }
@@ -201,59 +198,36 @@ impl TrackChunkBuilder {
             .map(|(w, h)| (w as u32, h as u32))
             .unwrap_or((0, 0));
 
-        trak::TrackBox {
-            tkhd: tkhd::TrackHeaderBox {
-                flags: tkhd::TrackHeaderFlags::ENABLED | tkhd::TrackHeaderFlags::IN_MOVIE,
-                creation_time: 0,
-                modification_time: 0,
-                track_id: 1,
-                duration: 0,
-                width: width.into(),
-                height: height.into(),
-            },
-            mdia: mdia::MediaBox {
-                mdhd: mdhd::MediaHeaderBox {
-                    creation_time: 0,
-                    modification_time: 0,
-                    timescale: timebase,
-                    duration: 0,
-                },
-                hdlr: hdlr::HandlerBox {
-                    handler_type: 0x76696465,
-                    name: String::from("Video Handler"),
-                },
-                minf: minf::MediaInformationBox {
-                    media_header: minf::MediaHeader::Video(vmhd::VideoMediaHeaderBox {}),
-                    dinf: dinf::DataInformationBox {
-                        dref: dref::DataReferenceBox {
-                            entries: vec![url::DataEntryUrlBox {
-                                location: String::from(""),
-                            }],
-                        },
-                    },
-                    stbl: stbl::SampleTableBox {
-                        stsd: stsd::SampleDescriptionBox {
-                            entries: vec![get_sample_entry_for_codec(&stream.params).unwrap()],
-                        },
-                        stts: stts::TimeToSampleBox {
-                            entries: self.times,
-                        },
-                        stsc: stsc::SampleToChunkBox {
-                            entries: self.chunks,
-                        },
-                        stsz: stsz::SampleSizeBox {
-                            sample_sizes: self.sizes,
-                        },
-                        co64: co64::ChunkLargeOffsetBox {
-                            chunk_offsets: self.offsets,
-                        },
-                        stss: Some(stss::SyncSampleBox {
-                            sync_samples: self.sync_samples,
-                        }),
-                    },
-                },
-            },
-        }
+        trak::TrackBox::new(
+            tkhd::TrackHeaderBox::new(
+                tkhd::TrackHeaderFlags::ENABLED | tkhd::TrackHeaderFlags::IN_MOVIE,
+                1,
+                0,
+                width.into(),
+                height.into(),
+            ),
+            mdia::MediaBox::new(
+                mdhd::MediaHeaderBox::new(timebase, 0),
+                hdlr::HandlerBox::new(0x76696465, String::from("Video Handler")),
+                minf::MediaInformationBox::new(
+                    minf::MediaHeader::Video(vmhd::VideoMediaHeaderBox::new()),
+                    dinf::DataInformationBox::new(dref::DataReferenceBox::new(vec![
+                        url::DataEntryUrlBox::new(String::from("")),
+                    ])),
+                    stbl::SampleTableBox::new(
+                        stsd::SampleDescriptionBox::new(vec![get_sample_entry_for_codec(
+                            &stream.params,
+                        )
+                        .unwrap()]),
+                        stts::TimeToSampleBox::new(self.times),
+                        stsc::SampleToChunkBox::new(self.chunks),
+                        stsz::SampleSizeBox::new(stsz::SampleSizes::Variable(self.sizes)),
+                        stbl::ChunkOffsets::Co64(co64::ChunkLargeOffsetBox::new(self.offsets)),
+                        Some(stss::SyncSampleBox::new(self.sync_samples)),
+                    ),
+                ),
+            ),
+        )
     }
 
     fn take_time_delta(&mut self, packet: &Packet) -> Option<u32> {
@@ -405,14 +379,15 @@ impl Muxer for Mp4Muxer {
         let brands = [*b"iso5"];
         let ftyp = ftyp::FileTypeBox::new(*b"isom", 0, (&brands[..]).into());
 
-        let offset = ftyp.size();
+        let offset = ftyp.total_size();
 
+        debug!("offset: {}", offset);
         ftyp.write(out)?;
 
         self.mdat_start = offset;
         self.mdat_offset = offset + 16;
 
-        mdat::MediaDataBox::write_header(u64::MAX, out)?;
+        Boks::new(*b"mdat").write(out, u64::MAX as u64)?;
 
         Ok(())
     }
@@ -449,16 +424,11 @@ impl Muxer for Mp4Muxer {
             .map(|t| (t.denom() / t.numer()) as u32)
             .unwrap_or(10_000);
 
-        let moov = moov::MovieBox {
-            mvhd: mvhd::MovieHeaderBox {
-                creation_time: 0,
-                modification_time: 0,
-                timescale: timebase,
-                duration: 0,
-            },
-            mvex: None,
-            tracks: self.take_tracks(),
-        };
+        let moov = moov::MovieBox::new(
+            mvhd::MovieHeaderBox::new(timebase, 0),
+            None,
+            self.take_tracks(),
+        );
 
         moov.write(out)?;
 

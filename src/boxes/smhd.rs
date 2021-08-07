@@ -1,31 +1,35 @@
-use crate::Mp4BoxError;
-use crate::{BoxClass, BoxName, Mp4Box};
+use crate::*;
 
 use std::io::Write;
 use std::mem::size_of;
 
-pub struct SoundMediaHeaderBox {}
+pub struct SoundMediaHeaderBox {
+    full_box: FullBox,
+}
 
-impl Mp4Box for SoundMediaHeaderBox {
-    const NAME: BoxName = *b"smhd";
-
-    fn class(&self) -> BoxClass {
-        BoxClass::FullBox {
-            version: 0,
-            flags: 0,
+impl SoundMediaHeaderBox {
+    pub fn new(_timescale: Vec<u32>) -> Self {
+        SoundMediaHeaderBox {
+            full_box: FullBox::new(*b"smhd", 0, 0),
         }
     }
 
-    fn content_size(&self) -> u64 {
-        size_of::<u16>() as u64 + // balance
-        size_of::<u16>() as u64 // reserved
-    }
+    pub fn write(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
+        self.full_box.write(writer, self.total_size())?;
 
-    fn write_contents(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
         let contents = [0u8; 4];
 
         writer.write_all(&contents)?;
 
         Ok(())
+    }
+
+    pub fn total_size(&self) -> u64 {
+        self.full_box.size(self.size())
+    }
+
+    fn size(&self) -> u64 {
+        size_of::<u16>() as u64 + // balance
+        size_of::<u16>() as u64 // reserved
     }
 }

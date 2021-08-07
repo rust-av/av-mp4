@@ -1,9 +1,6 @@
 use byteorder::{BigEndian, ByteOrder};
 
-use crate::Buffered;
-use crate::Mp4BoxError;
-use crate::I16F16;
-use crate::{BoxClass, BoxName, Mp4Box};
+use crate::*;
 
 use std::io::Write;
 use std::mem::size_of;
@@ -19,7 +16,7 @@ bitflags::bitflags! {
 
 #[derive(Debug)]
 pub struct TrackHeaderBox {
-    pub flags: TrackHeaderFlags,
+    pub full_box: FullBox,
     pub creation_time: u64,
     pub modification_time: u64,
     pub track_id: u32,
@@ -29,94 +26,27 @@ pub struct TrackHeaderBox {
 }
 
 impl TrackHeaderBox {
-    pub fn read(buf: &mut dyn Buffered) -> Result<Self, Mp4BoxError> {
-        let (version, flags) = crate::read_box_flags(buf).unwrap();
-        let flags = TrackHeaderFlags::from_bits(flags).unwrap();
-
-        match version {
-            0 => Self::read_v0(buf, flags),
-            1 => Self::read_v1(buf, flags),
-            _ => todo!(),
-        }
-    }
-
-    pub fn read_v0(
-        buf: &mut dyn Buffered,
+    pub fn new(
         flags: TrackHeaderFlags,
-    ) -> Result<Self, Mp4BoxError> {
-        let mut contents = [0u8; 80];
-        buf.read_exact(&mut contents).unwrap();
-
-        let track_id = BigEndian::read_u32(&contents[8..]);
-        let duration = BigEndian::read_u32(&contents[16..]) as u64;
-
-        let width = BigEndian::read_u32(&contents[64..]).into();
-        let height = BigEndian::read_u32(&contents[68..]).into();
-
-        Ok(TrackHeaderBox {
-            flags,
+        track_id: u32,
+        duration: u64,
+        width: I16F16,
+        height: I16F16,
+    ) -> Self {
+        TrackHeaderBox {
+            full_box: FullBox::new(*b"tkhd", 1, flags.bits()),
             creation_time: 0,
             modification_time: 0,
             track_id,
             duration,
             width,
             height,
-        })
-    }
-
-    pub fn read_v1(
-        buf: &mut dyn Buffered,
-        flags: TrackHeaderFlags,
-    ) -> Result<Self, Mp4BoxError> {
-        let mut contents = [0u8; 92];
-        buf.read_exact(&mut contents).unwrap();
-
-        let track_id = BigEndian::read_u32(&contents[16..]);
-        let duration = BigEndian::read_u64(&contents[24..]);
-
-        let width = BigEndian::read_u32(&contents[76..]).into();
-        let height = BigEndian::read_u32(&contents[80..]).into();
-
-        Ok(TrackHeaderBox {
-            flags,
-            creation_time: 0,
-            modification_time: 0,
-            track_id,
-            duration,
-            width,
-            height,
-        })
-    }
-}
-impl Mp4Box for TrackHeaderBox {
-    const NAME: BoxName = *b"tkhd";
-
-    fn class(&self) -> BoxClass {
-        let flags = TrackHeaderFlags::ENABLED | TrackHeaderFlags::IN_MOVIE;
-
-        BoxClass::FullBox {
-            version: 1,
-            flags: flags.bits(),
         }
     }
 
-    fn content_size(&self) -> u64 {
-        size_of::<u64>() as u64 + // creation_time
-        size_of::<u64>() as u64 + // modification_time
-        size_of::<u32>() as u64 + // track_ID
-        size_of::<u32>() as u64 + // reserved
-        size_of::<u64>() as u64 + // duration
-        size_of::<u32>() as u64 * 2 + // reserved
-        size_of::<u16>() as u64 + // layer
-        size_of::<u16>() as u64 + // alternate_group
-        size_of::<u16>() as u64 + // volume
-        size_of::<u16>() as u64 + // reserved
-        size_of::<i32>() as u64 * 9 + // matrix
-        size_of::<u32>() as u64 + // width
-        size_of::<u32>() as u64 // height
-    }
+    pub fn write(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
+        self.full_box.write(writer, self.total_size())?;
 
-    fn write_contents(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
         let mut contents = [0u8; 92];
 
         BigEndian::write_u64(&mut contents[..], self.creation_time);
@@ -136,5 +66,81 @@ impl Mp4Box for TrackHeaderBox {
         writer.write_all(&contents)?;
 
         Ok(())
+    }
+
+    pub fn read(buf: &mut dyn Buffered) -> Result<Self, Mp4BoxError> {
+        let full_box = FullBox::read(buf)?;
+
+        match full_box.version {
+            0 => Self::read_v0(buf, full_box),
+            1 => Self::read_v1(buf, full_box),
+            _ => todo!(),
+        }
+    }
+
+    fn read_v0(buf: &mut dyn Buffered, full_box: FullBox) -> Result<Self, Mp4BoxError> {
+        let _flags = TrackHeaderFlags::from_bits(full_box.flags).unwrap();
+
+        let mut contents = [0u8; 80];
+        buf.read_exact(&mut contents).unwrap();
+
+        let track_id = BigEndian::read_u32(&contents[8..]);
+        let duration = BigEndian::read_u32(&contents[16..]) as u64;
+
+        let width = BigEndian::read_u32(&contents[64..]).into();
+        let height = BigEndian::read_u32(&contents[68..]).into();
+
+        Ok(TrackHeaderBox {
+            full_box,
+            creation_time: 0,
+            modification_time: 0,
+            track_id,
+            duration,
+            width,
+            height,
+        })
+    }
+
+    fn read_v1(buf: &mut dyn Buffered, full_box: FullBox) -> Result<Self, Mp4BoxError> {
+        let _flags = TrackHeaderFlags::from_bits(full_box.flags).unwrap();
+
+        let mut contents = [0u8; 92];
+        buf.read_exact(&mut contents).unwrap();
+
+        let track_id = BigEndian::read_u32(&contents[16..]);
+        let duration = BigEndian::read_u64(&contents[24..]);
+
+        let width = BigEndian::read_u32(&contents[76..]).into();
+        let height = BigEndian::read_u32(&contents[80..]).into();
+
+        Ok(TrackHeaderBox {
+            full_box,
+            creation_time: 0,
+            modification_time: 0,
+            track_id,
+            duration,
+            width,
+            height,
+        })
+    }
+
+    pub fn total_size(&self) -> u64 {
+        self.full_box.size(self.size())
+    }
+
+    fn size(&self) -> u64 {
+        size_of::<u64>() as u64 + // creation_time
+        size_of::<u64>() as u64 + // modification_time
+        size_of::<u32>() as u64 + // track_ID
+        size_of::<u32>() as u64 + // reserved
+        size_of::<u64>() as u64 + // duration
+        size_of::<u32>() as u64 * 2 + // reserved
+        size_of::<u16>() as u64 + // layer
+        size_of::<u16>() as u64 + // alternate_group
+        size_of::<u16>() as u64 + // volume
+        size_of::<u16>() as u64 + // reserved
+        size_of::<i32>() as u64 * 9 + // matrix
+        size_of::<u32>() as u64 + // width
+        size_of::<u32>() as u64 // height
     }
 }

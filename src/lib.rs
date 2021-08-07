@@ -7,7 +7,8 @@ use byteorder::{BigEndian, ByteOrder};
 use log::*;
 
 use std::fmt;
-use std::io::{Error as IoError, Write};
+use std::io::{Error as IoError, SeekFrom, Write};
+use std::string::FromUtf8Error;
 
 pub mod boxes {
     pub mod vpcc;
@@ -37,6 +38,7 @@ pub mod boxes {
     pub mod vmhd;
 
     pub mod co64;
+    pub mod stco;
     pub mod stsc;
     pub mod stsd;
     pub mod stss;
@@ -46,6 +48,31 @@ pub mod boxes {
 
 pub mod demuxer;
 pub mod muxer;
+
+pub struct BoksIterator {
+    size: u64,
+    start: u64,
+}
+
+impl BoksIterator {
+    pub fn new(reader: &mut dyn Buffered, size: u64) -> Self {
+        let start = reader.seek(SeekFrom::Current(0)).unwrap();
+
+        BoksIterator { size, start }
+    }
+
+    fn next(&self, reader: &mut dyn Buffered) -> Option<(u64, Boks)> {
+        let pos = reader.seek(SeekFrom::Current(0)).unwrap();
+
+        if pos - self.start >= self.size {
+            return None;
+        }
+
+        let boks = Boks::peek(reader).ok()?;
+
+        Some((pos, boks))
+    }
+}
 
 pub struct I16F16(u32);
 
@@ -74,157 +101,393 @@ impl From<u32> for I16F16 {
 pub enum Mp4BoxError {
     #[error("I/O error: {0}")]
     Io(#[from] IoError),
+
+    #[error("Invalid UTF-8: {0}")]
+    InvalidUtf8(#[from] FromUtf8Error),
+
+    #[error("Unexpected end of stream")]
+    UnexpectedEos,
+
+    #[error("Unsupported sample entry {0:?}")]
+    UnsupportedSampleEntry(BoxPrint),
+
+    #[error("Unexpected name. Expected {0:?} but found {1:?}")]
+    UnexpectedName(BoxPrint, BoxPrint),
+
+    #[error("Required box {0:?} was not found.")]
+    RequiredBoxNotFound(BoxPrint),
+
+    #[error("Required boxes {0:?} or {1:?} was not found.")]
+    RequiredEitherBoxesNotFound(BoxPrint, BoxPrint),
+
+    #[error("Expected at least {1} {0:?} boxes, but found {2}.")]
+    NotEnoughBoxes(BoxPrint, u32, u32),
 }
 
 impl From<Mp4BoxError> for AvError {
     fn from(error: Mp4BoxError) -> AvError {
         match error {
             Mp4BoxError::Io(err) => AvError::Io(err),
+            _ => AvError::InvalidData,
         }
     }
 }
 
-fn get_total_box_size<B: Mp4Box + ?Sized>(boks: &B) -> u64 {
-    let size = boks.content_size();
-
-    size + boks.class().size() + 8
-}
-
-fn write_box_header<B: Mp4Box + ?Sized>(header: &mut [u8], size: u64) -> usize {
-    if size > u32::MAX as _ {
-        BigEndian::write_u32(&mut *header, 1);
-        header[4..8].copy_from_slice(&B::NAME);
-        BigEndian::write_u64(&mut header[8..], size);
-
-        16
+pub(crate) fn non_empty<T>(boxes: Vec<T>, name: BoxName) -> Result<Vec<T>, Mp4BoxError> {
+    if !boxes.is_empty() {
+        Ok(boxes)
     } else {
-        BigEndian::write_u32(&mut *header, size as u32);
-        header[4..8].copy_from_slice(&B::NAME);
-
-        8
+        Err(Mp4BoxError::NotEnoughBoxes(BoxPrint(name), 1, 0))
     }
 }
 
-fn write_box_class(header: &mut [u8], class: BoxClass) -> usize {
-    match class {
-        BoxClass::FullBox { version, flags } => {
-            header[0] = version;
-            BigEndian::write_u24(&mut header[1..], flags);
-        }
-        BoxClass::SampleEntry {
-            data_reference_index,
-        } => {
-            BigEndian::write_u16(&mut header[6..], data_reference_index);
-        }
-        BoxClass::VisualSampleEntry {
-            data_reference_index,
-            width,
-            height,
-        } => {
-            BigEndian::write_u16(&mut header[6..], data_reference_index);
-            BigEndian::write_u16(&mut header[24..], width);
-            BigEndian::write_u16(&mut header[26..], height);
-            BigEndian::write_u32(&mut header[28..], 0x0048_0000);
-            BigEndian::write_u32(&mut header[32..], 0x0048_0000);
-            BigEndian::write_u16(&mut header[40..], 1);
-            BigEndian::write_u16(&mut header[74..], 0x0018);
-            BigEndian::write_i16(&mut header[76..], -1);
-        }
-        _ => {}
+pub(crate) fn require_box<T>(val: Option<T>, name: BoxName) -> Result<T, Mp4BoxError> {
+    if let Some(val) = val {
+        Ok(val)
+    } else {
+        Err(Mp4BoxError::RequiredBoxNotFound(BoxPrint(name)))
     }
-
-    class.size() as usize
 }
 
-#[derive(Copy, Clone)]
-pub enum BoxClass {
-    Box,
-    FullBox {
-        version: u8,
-        flags: u32,
-    },
-    SampleEntry {
-        data_reference_index: u16,
-    },
-    VisualSampleEntry {
-        data_reference_index: u16,
-        width: u16,
-        height: u16,
-    },
+pub(crate) fn require_either_box<T>(
+    val: Option<T>,
+    a: BoxName,
+    b: BoxName,
+) -> Result<T, Mp4BoxError> {
+    if let Some(val) = val {
+        Ok(val)
+    } else {
+        Err(Mp4BoxError::RequiredEitherBoxesNotFound(
+            BoxPrint(a),
+            BoxPrint(b),
+        ))
+    }
 }
 
-impl BoxClass {
-    const fn max_size() -> usize {
-        78
-    }
+pub(crate) fn goto(buf: &mut dyn Buffered, pos: u64) -> Result<(), Mp4BoxError> {
+    buf.seek(SeekFrom::Start(pos))?;
 
-    fn size(&self) -> u64 {
-        match self {
-            BoxClass::Box => 0,
-            BoxClass::FullBox { .. } => 4,
-            BoxClass::SampleEntry { .. } => 8,
-            BoxClass::VisualSampleEntry { .. } => 78,
+    Ok(())
+}
+
+pub(crate) fn skip(buf: &mut dyn Buffered, count: u64) -> Result<(), Mp4BoxError> {
+    buf.seek(SeekFrom::Current(count as i64))?;
+
+    Ok(())
+}
+
+pub(crate) fn peek(buf: &mut dyn Buffered, size: usize) -> Result<&[u8], Mp4BoxError> {
+    if size < buf.data().len() {
+        Ok(&buf.data()[..size])
+    } else {
+        buf.fill_buf()?;
+
+        let data = buf.data();
+
+        if size < data.len() {
+            Ok(&data[..size])
+        } else {
+            Err(Mp4BoxError::UnexpectedEos)
         }
     }
 }
 
-pub trait Mp4Box {
-    const NAME: BoxName;
+impl fmt::Debug for Boks {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "{:?} ({})", BoxPrint(self.name), self.size)
+    }
+}
 
-    fn class(&self) -> BoxClass {
-        BoxClass::Box
+#[derive(Clone)]
+pub struct Boks {
+    name: BoxName,
+    size: u64,
+    read_size: u8,
+}
+
+impl Boks {
+    pub fn new(name: BoxName) -> Self {
+        Boks {
+            name,
+            size: 0,
+            read_size: 0,
+        }
     }
 
-    fn size(&self) -> u64 {
-        get_total_box_size::<Self>(&self)
+    pub fn peek(buf: &mut dyn Buffered) -> Result<Self, Mp4BoxError> {
+        use std::convert::TryInto;
+
+        let contents = peek(buf, 8)?;
+
+        let mut size = BigEndian::read_u32(&contents[0..]) as u64;
+        let name = contents[4..].try_into().unwrap();
+
+        if size == 1 {
+            let contents = peek(buf, 16)?;
+            size = BigEndian::read_u64(&contents[8..]);
+        }
+
+        Ok(Boks {
+            name,
+            size,
+            read_size: 0,
+        })
     }
 
-    fn write_header(size: u64, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
-        let mut header = [0u8; 16];
+    pub fn read(buf: &mut dyn Buffered) -> Result<Self, Mp4BoxError> {
+        use std::convert::TryInto;
+
+        let mut contents = [0u8; 8];
+        buf.read_exact(&mut contents)?;
+
+        let mut read_size = 8;
+        let mut size = BigEndian::read_u32(&contents[0..]) as u64;
+        let name = contents[4..].try_into().unwrap();
+
+        if size == 1 {
+            buf.read_exact(&mut contents)?;
+            size = BigEndian::read_u64(&contents[..]);
+            read_size = 16;
+        }
+
+        Ok(Boks {
+            name,
+            size,
+            read_size,
+        })
+    }
+
+    pub fn read_named(buf: &mut dyn Buffered, expected: BoxName) -> Result<Self, Mp4BoxError> {
+        use std::convert::TryInto;
+
+        let mut contents = [0u8; 8];
+        buf.read_exact(&mut contents)?;
+
+        let mut read_size = 8;
+        let mut size = BigEndian::read_u32(&contents[0..]) as u64;
+        let name = contents[4..].try_into().unwrap();
+
+        if name != expected {
+            return Err(Mp4BoxError::UnexpectedName(
+                BoxPrint(expected),
+                BoxPrint(name),
+            ));
+        }
+
+        if size == 1 {
+            buf.read_exact(&mut contents)?;
+            size = BigEndian::read_u64(&contents[..]);
+            read_size = 16;
+        }
+
+        Ok(Boks {
+            name,
+            size,
+            read_size,
+        })
+    }
+
+    fn write(&self, writer: &mut dyn Write, size: u64) -> Result<(), Mp4BoxError> {
+        let mut bytes = [0u8; 16];
 
         if size > u32::MAX as _ {
-            BigEndian::write_u32(&mut header[..], 1);
-            header[4..8].copy_from_slice(&Self::NAME);
-            BigEndian::write_u64(&mut header[8..], size);
+            BigEndian::write_u32(&mut bytes[..], 1);
+            bytes[4..8].copy_from_slice(&self.name);
+            BigEndian::write_u64(&mut bytes[8..], size);
 
-            writer.write_all(&header[..])?;
+            writer.write_all(&bytes[..])?;
         } else {
-            BigEndian::write_u32(&mut header[..], size as u32);
-            header[4..8].copy_from_slice(&Self::NAME);
+            BigEndian::write_u32(&mut bytes[..], size as u32);
+            bytes[4..8].copy_from_slice(&self.name);
 
-            writer.write_all(&header[..8])?;
+            writer.write_all(&bytes[..8])?;
         }
 
         Ok(())
     }
 
-    fn write_class(class: BoxClass, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
-        let mut cls = [0u8; BoxClass::max_size()];
+    pub fn size(&self, size: u64) -> u64 {
+        if size + 8 > u32::MAX as u64 {
+            size + 16
+        } else {
+            size + 8
+        }
+    }
 
-        let size = write_box_class(&mut cls, class);
+    pub fn remaining_size(&self) -> u64 {
+        self.size - self.read_size as u64
+    }
+}
 
-        writer.write_all(&cls[..size])?;
+#[derive(Debug)]
+pub struct FullBox {
+    boks: Boks,
+    version: u8,
+    flags: u32,
+    read_size: u8,
+}
+
+impl FullBox {
+    fn new(name: BoxName, version: u8, flags: u32) -> Self {
+        FullBox {
+            boks: Boks::new(name),
+            version,
+            flags,
+            read_size: 0,
+        }
+    }
+
+    fn write(&self, writer: &mut dyn Write, size: u64) -> Result<(), Mp4BoxError> {
+        self.boks.write(writer, size)?;
+
+        let mut bytes = [0u8; 4];
+        bytes[0] = self.version;
+        BigEndian::write_u24(&mut bytes[1..], self.flags);
+
+        writer.write_all(&bytes[..])?;
 
         Ok(())
     }
 
-    fn write(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError>
-    where
-        Self: Sized,
-    {
-        let mut header = [0u8; 16 + BoxClass::max_size()];
+    pub fn read_named(buf: &mut dyn Buffered, expected: BoxName) -> Result<Self, Mp4BoxError> {
+        let boks = Boks::read_named(buf, expected)?;
 
-        let mut size = write_box_header::<Self>(&mut header, self.size());
-        size += write_box_class(&mut header[size..], self.class()) as usize;
-        writer.write_all(&header[..size])?;
+        let mut val = [0u8; 4];
+        buf.read_exact(&mut val)?;
 
-        self.write_contents(writer)?;
+        let version = val[0];
+        let flags = BigEndian::read_u24(&val[1..]);
+
+        Ok(FullBox {
+            boks,
+            version,
+            flags,
+            read_size: 4,
+        })
+    }
+
+    pub fn read(buf: &mut dyn Buffered) -> Result<Self, Mp4BoxError> {
+        let boks = Boks::read(buf)?;
+
+        let mut val = [0u8; 4];
+        buf.read_exact(&mut val)?;
+
+        let version = val[0];
+        let flags = BigEndian::read_u24(&val[1..]);
+
+        Ok(FullBox {
+            boks,
+            version,
+            flags,
+            read_size: 4,
+        })
+    }
+
+    pub fn size(&self, size: u64) -> u64 {
+        self.boks.size(size + 4)
+    }
+
+    pub fn remaining_size(&self) -> u64 {
+        self.boks.size - self.read_size as u64
+    }
+}
+
+pub struct SampleEntry {
+    boks: Boks,
+    data_reference_index: u16,
+}
+
+impl SampleEntry {
+    pub fn new(name: BoxName, data_reference_index: u16) -> Self {
+        SampleEntry {
+            boks: Boks::new(name),
+            data_reference_index,
+        }
+    }
+
+    pub fn read(buf: &mut dyn Buffered) -> Result<Self, Mp4BoxError> {
+        let boks = Boks::read(buf)?;
+
+        let mut contents = [0u8; 8];
+        buf.read_exact(&mut contents)?;
+
+        let data_reference_index = BigEndian::read_u16(&contents[6..]);
+
+        Ok(SampleEntry {
+            boks,
+            data_reference_index,
+        })
+    }
+
+    fn write(&self, writer: &mut dyn Write, size: u64) -> Result<(), Mp4BoxError> {
+        self.boks.write(writer, size)?;
+
+        let mut bytes = [0u8; 8];
+        BigEndian::write_u16(&mut bytes[6..], self.data_reference_index);
+
+        writer.write_all(&bytes[..])?;
 
         Ok(())
     }
 
-    fn content_size(&self) -> u64;
-    fn write_contents(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError>;
+    fn size(&self, size: u64) -> u64 {
+        self.boks.size(size + 8)
+    }
+}
+
+pub struct VisualSampleEntry {
+    sample_entry: SampleEntry,
+    width: u16,
+    height: u16,
+    // clap: Option<CleanApertureBox>,
+    // pasp: Option<PixelAspectRatioBox>,
+}
+
+impl VisualSampleEntry {
+    pub fn new(name: BoxName, data_reference_index: u16, width: u16, height: u16) -> Self {
+        VisualSampleEntry {
+            sample_entry: SampleEntry::new(name, data_reference_index),
+            width,
+            height,
+        }
+    }
+
+    pub fn read(buf: &mut dyn Buffered) -> Result<Self, Mp4BoxError> {
+        let sample_entry = SampleEntry::read(buf)?;
+
+        let mut contents = [0u8; 70];
+        buf.read_exact(&mut contents)?;
+
+        let width = BigEndian::read_u16(&contents[20..]);
+        let height = BigEndian::read_u16(&contents[24..]);
+
+        Ok(VisualSampleEntry {
+            sample_entry,
+            width,
+            height,
+        })
+    }
+
+    fn write(&self, writer: &mut dyn Write, size: u64) -> Result<(), Mp4BoxError> {
+        self.sample_entry.write(writer, size)?;
+
+        let mut bytes = [0u8; 70];
+        BigEndian::write_u16(&mut bytes[16..], self.width);
+        BigEndian::write_u16(&mut bytes[18..], self.height);
+        BigEndian::write_u32(&mut bytes[20..], 0x0048_0000);
+        BigEndian::write_u32(&mut bytes[24..], 0x0048_0000);
+        BigEndian::write_u16(&mut bytes[32..], 1);
+        BigEndian::write_u16(&mut bytes[66..], 0x0018);
+        BigEndian::write_i16(&mut bytes[68..], -1);
+
+        writer.write_all(&bytes[..])?;
+
+        Ok(())
+    }
+
+    fn size(&self, size: u64) -> u64 {
+        self.sample_entry.size(size + 70)
+    }
 }
 
 pub type BoxName = [u8; 4];

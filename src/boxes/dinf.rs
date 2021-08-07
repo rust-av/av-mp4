@@ -1,25 +1,35 @@
-use crate::BoxName;
-use crate::Mp4Box;
-use crate::Mp4BoxError;
+use crate::*;
 
 use super::dref::DataReferenceBox;
 
 use std::io::Write;
 
 pub struct DataInformationBox {
+    boks: Boks,
     pub dref: DataReferenceBox,
 }
 
-impl Mp4Box for DataInformationBox {
-    const NAME: BoxName = *b"dinf";
-
-    fn content_size(&self) -> u64 {
-        self.dref.size()
+impl DataInformationBox {
+    pub fn new(dref: DataReferenceBox) -> Self {
+        DataInformationBox {
+            boks: Boks::new(*b"dinf"),
+            dref,
+        }
     }
 
-    fn write_contents(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
+    pub fn write(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
+        self.boks.write(writer, self.total_size())?;
+
         self.dref.write(writer)?;
 
         Ok(())
+    }
+
+    pub fn total_size(&self) -> u64 {
+        self.boks.size(self.size())
+    }
+
+    fn size(&self) -> u64 {
+        self.dref.total_size()
     }
 }

@@ -1,38 +1,40 @@
 use byteorder::{BigEndian, ByteOrder};
 
-use crate::Mp4BoxError;
-use crate::{BoxClass, BoxName, Mp4Box};
+use crate::*;
 
 use std::io::Write;
 use std::mem::size_of;
 
 pub struct TrackExtendsBox {
-    pub track_id: u32,
-    pub default_sample_description_index: u32,
-    pub default_sample_duration: u32,
-    pub default_sample_size: u32,
-    pub default_sample_flags: u32,
+    full_box: FullBox,
+    track_id: u32,
+    default_sample_description_index: u32,
+    default_sample_duration: u32,
+    default_sample_size: u32,
+    default_sample_flags: u32,
 }
 
-impl Mp4Box for TrackExtendsBox {
-    const NAME: BoxName = *b"trex";
-
-    fn class(&self) -> BoxClass {
-        BoxClass::FullBox {
-            version: 0,
-            flags: 0,
+impl TrackExtendsBox {
+    pub fn new(
+        track_id: u32,
+        default_sample_description_index: u32,
+        default_sample_duration: u32,
+        default_sample_size: u32,
+        default_sample_flags: u32,
+    ) -> Self {
+        TrackExtendsBox {
+            full_box: FullBox::new(*b"trex", 0, 0),
+            track_id,
+            default_sample_description_index,
+            default_sample_duration,
+            default_sample_size,
+            default_sample_flags,
         }
     }
 
-    fn content_size(&self) -> u64 {
-        size_of::<u32>() as u64 + // track_ID
-        size_of::<u32>() as u64 + // default_sample_description_index
-        size_of::<u32>() as u64 + // default_sample_duration
-        size_of::<u32>() as u64 + // default_sample_size
-        size_of::<u32>() as u64 // default_sample_flags
-    }
+    pub fn write(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
+        self.full_box.write(writer, self.total_size())?;
 
-    fn write_contents(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
         let mut contents = [0u8; 20];
 
         BigEndian::write_u32(&mut contents[..], self.track_id);
@@ -44,5 +46,17 @@ impl Mp4Box for TrackExtendsBox {
         writer.write_all(&contents)?;
 
         Ok(())
+    }
+
+    pub fn total_size(&self) -> u64 {
+        self.full_box.size(self.size())
+    }
+
+    fn size(&self) -> u64 {
+        size_of::<u32>() as u64 + // track_ID
+        size_of::<u32>() as u64 + // default_sample_description_index
+        size_of::<u32>() as u64 + // default_sample_duration
+        size_of::<u32>() as u64 + // default_sample_size
+        size_of::<u32>() as u64 // default_sample_flags
     }
 }

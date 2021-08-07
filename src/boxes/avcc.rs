@@ -1,38 +1,46 @@
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::BoxName;
-use crate::Buffered;
-use crate::Mp4Box;
-use crate::Mp4BoxError;
-
-use log::*;
+use crate::*;
 
 use std::io::Write;
 use std::mem::size_of;
 
 pub struct AvcConfigurationBox {
+    boks: Boks,
     pub config: AvcDecoderConfigurationRecord,
 }
 
 impl AvcConfigurationBox {
-    pub fn read(buf: &mut dyn Buffered) -> Result<Self, crate::AvError> {
-        Ok(AvcConfigurationBox {
-            config: AvcDecoderConfigurationRecord::read(buf)?,
-        })
-    }
-}
-
-impl Mp4Box for AvcConfigurationBox {
-    const NAME: BoxName = *b"avcC";
-
-    fn content_size(&self) -> u64 {
-        self.config.size()
+    pub fn new(config: AvcDecoderConfigurationRecord) -> Self {
+        AvcConfigurationBox {
+            boks: Boks::new(*b"avcC"),
+            config,
+        }
     }
 
-    fn write_contents(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
+    pub fn write(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
+        self.boks.write(writer, self.total_size())?;
+
         self.config.write(writer)?;
 
         Ok(())
+    }
+
+    pub fn total_size(&self) -> u64 {
+        self.boks.size(self.size())
+    }
+
+    fn size(&self) -> u64 {
+        self.config.size()
+    }
+
+    pub fn read(buf: &mut dyn Buffered) -> Result<Self, Mp4BoxError> {
+        let boks = Boks::read_named(buf, *b"avcC")?;
+
+        Ok(AvcConfigurationBox {
+            boks,
+            config: AvcDecoderConfigurationRecord::read(buf)?,
+        })
     }
 }
 
@@ -48,7 +56,7 @@ pub struct AvcDecoderConfigurationRecord {
 }
 
 impl AvcDecoderConfigurationRecord {
-    pub fn read(buf: &mut dyn Buffered) -> Result<Self, crate::AvError> {
+    pub fn read(buf: &mut dyn Buffered) -> Result<Self, Mp4BoxError> {
         let mut header = [0u8; 6];
         buf.read_exact(&mut header)?;
 

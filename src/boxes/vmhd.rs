@@ -1,31 +1,36 @@
-use crate::Mp4BoxError;
-use crate::{BoxClass, BoxName, Mp4Box};
+use crate::*;
 
 use std::io::Write;
 use std::mem::size_of;
 
-pub struct VideoMediaHeaderBox {}
+pub struct VideoMediaHeaderBox {
+    full_box: FullBox,
+}
 
-impl Mp4Box for VideoMediaHeaderBox {
-    const NAME: BoxName = *b"vmhd";
-
-    fn class(&self) -> BoxClass {
-        BoxClass::FullBox {
-            version: 0,
-            flags: 1,
+impl VideoMediaHeaderBox {
+    pub fn new() -> Self {
+        VideoMediaHeaderBox {
+            full_box: FullBox::new(*b"vmhd", 0, 0),
         }
     }
 
-    fn content_size(&self) -> u64 {
-        size_of::<u16>() as u64 + // graphicsmode
-        (size_of::<u16>() as u64 * 3) // opcolor
-    }
+    pub fn write(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
+        debug!("vmhd: {}", self.total_size());
+        self.full_box.write(writer, self.total_size())?;
 
-    fn write_contents(self, writer: &mut dyn Write) -> Result<(), Mp4BoxError> {
         let contents = [0u8; 8];
 
         writer.write_all(&contents)?;
 
         Ok(())
+    }
+
+    pub fn total_size(&self) -> u64 {
+        self.full_box.size(self.size())
+    }
+
+    fn size(&self) -> u64 {
+        size_of::<u16>() as u64 + // graphicsmode
+        (size_of::<u16>() as u64 * 3) // opcolor
     }
 }
