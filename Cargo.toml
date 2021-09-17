@@ -15,9 +15,15 @@ bytemuck = "1.5"
 thiserror = "1.0"
 log = "0.4"
 
+mpeg1 = { path = "../mpeg1" }
+
 [dev-dependencies]
 pretty_env_logger = "0.4"
 
 [patch.crates-io]
-av-data = { git = "https://github.com/rust-av/rust-av" }
-av-format = { git = "https://github.com/rust-av/rust-av" }
+av-codec = { path = "../rust-av/codec" }
+av-data = { path = "../rust-av/data" }
+av-format = { path = "../rust-av/format" } #git = "https://github.com/rust-av/rust-av" }
+av-bitstream = { path = "../rust-av/bitstream" } #git = "https://github.com/rust-av/rust-av" }
+
+

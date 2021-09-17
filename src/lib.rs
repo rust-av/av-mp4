@@ -11,11 +11,18 @@ use std::io::{Error as IoError, SeekFrom, Write};
 use std::string::FromUtf8Error;
 
 pub mod boxes {
-    pub mod vpcc;
-    pub mod vpxx;
+    pub mod codec {
+        pub mod stsd;
+        pub mod esds;
 
-    pub mod avc1;
-    pub mod avcc;
+        pub mod vpcc;
+        pub mod vpxx;
+
+        pub mod avc1;
+        pub mod avcc;
+
+        pub mod mp4v;
+    }
 
     pub mod dinf;
     pub mod dref;
@@ -40,7 +47,6 @@ pub mod boxes {
     pub mod co64;
     pub mod stco;
     pub mod stsc;
-    pub mod stsd;
     pub mod stss;
     pub mod stsz;
     pub mod stts;
@@ -105,6 +111,9 @@ pub enum Mp4BoxError {
     #[error("Invalid UTF-8: {0}")]
     InvalidUtf8(#[from] FromUtf8Error),
 
+    #[error("Failed parsing MPEG bitstream: {0}")]
+    MpegError(#[from] mpeg1::MpegError),
+
     #[error("Unexpected end of stream")]
     UnexpectedEos,
 
@@ -122,6 +131,12 @@ pub enum Mp4BoxError {
 
     #[error("Expected at least {1} {0:?} boxes, but found {2}.")]
     NotEnoughBoxes(BoxPrint, u32, u32),
+
+    #[error("Unexpected descriptor tag. Expected 0x{0:x} but found 0x{1:x}")]
+    UnexpectedTag(u8, u8),
+
+    #[error("Unsupported MPEG-4 codec {0:02x}")]
+    UnsupportedMpeg4Codec(u8),
 }
 
 impl From<Mp4BoxError> for AvError {
@@ -168,6 +183,10 @@ pub(crate) fn goto(buf: &mut dyn Buffered, pos: u64) -> Result<(), Mp4BoxError> 
     buf.seek(SeekFrom::Start(pos))?;
 
     Ok(())
+}
+
+pub(crate) fn pos(buf: &mut dyn Buffered) -> Result<u64, Mp4BoxError> {
+    Ok(buf.seek(SeekFrom::Current(0))?)
 }
 
 pub(crate) fn skip(buf: &mut dyn Buffered, count: u64) -> Result<(), Mp4BoxError> {
@@ -392,6 +411,7 @@ impl FullBox {
     }
 }
 
+#[derive(Debug)]
 pub struct SampleEntry {
     boks: Boks,
     data_reference_index: u16,
@@ -435,6 +455,7 @@ impl SampleEntry {
     }
 }
 
+#[derive(Debug)]
 pub struct VisualSampleEntry {
     sample_entry: SampleEntry,
     width: u16,

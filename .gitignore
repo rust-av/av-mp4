@@ -3,3 +3,5 @@ Cargo.lock
 .cargo
 *.mp4
 *.mkv
+*.mpg
+*~

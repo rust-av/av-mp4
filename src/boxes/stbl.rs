@@ -2,7 +2,7 @@ use crate::*;
 
 use super::{
     co64::ChunkLargeOffsetBox, stco::ChunkOffsetBox, stsc::SampleToChunkBox,
-    stsd::SampleDescriptionBox, stss::SyncSampleBox, stsz::SampleSizeBox, stts::TimeToSampleBox,
+    codec::stsd::SampleDescriptionBox, stss::SyncSampleBox, stsz::SampleSizeBox, stts::TimeToSampleBox,
 };
 
 use std::io::Write;
